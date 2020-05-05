@@ -1,0 +1,23 @@
+PATH
+  remote: .
+  specs:
+    pg_replication (0.1.0)
+      pg
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    minitest (5.14.0)
+    pg (1.2.3)
+    rake (12.3.3)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  minitest (~> 5.0)
+  pg_replication!
+  rake (~> 12.0)
+
+BUNDLED WITH
+   2.1.4
