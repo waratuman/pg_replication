@@ -50,8 +50,7 @@ class PGReplicationTest < Minitest::Test
     end
 
     # Wait for replication to start
-    while replicator.last_server_lsn.nil?
-    end
+    sleep(0.1) while replicator.last_server_lsn.nil?
 
     connection.exec(<<-SQL)
       CREATE TABLE teas ( kind TEXT );
