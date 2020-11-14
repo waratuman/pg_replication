@@ -3,7 +3,7 @@ require "test_helper"
 class PGReplicationTest < Minitest::Test
 
   def connection
-    if @connection
+    if instance_variable_defined?(:@connection)# || @connection
       if @connection.finished?
         @connection = PG::Connection.new(dbname: "pg_replication_test")
       else
@@ -16,6 +16,11 @@ class PGReplicationTest < Minitest::Test
 
   def setup
     system('createdb', 'pg_replication_test')
+  end
+
+  def teardown
+    connection.close
+    system('dropdb', '--if-exists', 'pg_replication_test')
   end
 
   def test_replication
@@ -32,18 +37,21 @@ class PGReplicationTest < Minitest::Test
       '-P', 'test_decoding')
 
     results = []
+    replicator = PG::Replication.new(connection.conninfo_hash.merge({
+      slot: 'pg_replication_test_slot',
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
     t = Thread.new do
-      PG::Replication.new(connection.conninfo_hash.merge({
-        slot: 'pg_replication_test_slot',
-        replication_options: { "include-timestamp" => true }
-      }).select { |_, v| !v.nil? }) do |res|
+      replicator.replicate do |res|
         results << res
         Thread.exit if results.size >= 5
       end
     end
 
     # Wait for replication to start
-    sleep 2
+    while replicator.last_server_lsn.nil?
+    end
 
     connection.exec(<<-SQL)
       CREATE TABLE teas ( kind TEXT );

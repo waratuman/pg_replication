@@ -8,6 +8,7 @@ class PG::Replication
 
   EPOCH = Time.new(2000, 1, 1, 0, 0, 0)
 
+  # To inspect an LSN @lsn.to_s(16).upcase.rjust(10, '0').insert(2, "/")
   attr_accessor :slot, :sysid, :xlogpos, :dbname, :tli,
     :last_received_lsn, :last_processed_lsn, :last_server_lsn, :last_status
 
@@ -71,7 +72,7 @@ class PG::Replication
   end
 
   def connection
-    return @connection if @connection
+    return @connection if instance_variable_defined?(:@connection)
 
     # Establish Connection
     @connection = PG.connect(@connection_params)
@@ -203,6 +204,7 @@ class PG::Replication
         timestamp = (c1 << 32) + c2
         data = result[25..-1].force_encoding(connection.internal_encoding)
         yield data
+        self.last_processed_lsn = self.last_received_lsn
       else
         raise "unrecognized streaming header: \"%c\"" % [ result[0] ]
       end
