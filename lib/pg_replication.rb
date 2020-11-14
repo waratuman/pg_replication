@@ -3,14 +3,24 @@
 require "pg"
 require "pg/replication/version"
 
-class PG::Replication
+class PG::Replicator
   class Error < StandardError; end
 
   EPOCH = Time.new(2000, 1, 1, 0, 0, 0)
 
   # To inspect an LSN @lsn.to_s(16).upcase.rjust(10, '0').insert(2, "/")
-  attr_accessor :slot, :sysid, :xlogpos, :dbname, :tli,
-    :last_received_lsn, :last_processed_lsn, :last_server_lsn, :last_status
+  attr_accessor :host,
+    :port,
+    :dbname,
+    :slot,
+    :sysid,
+    :xlogpos,
+    :tli,
+    :options,
+    :last_received_lsn,
+    :last_processed_lsn,
+    :last_server_lsn,
+    :last_status
 
   def initialize(*args, &block)
     case args[0]
@@ -29,7 +39,7 @@ class PG::Replication
         String.new
       end
       args[0].delete(:replication_options)
-      args[0].delete_if { |k, v| v.nil? || v.empty? }
+      args[0].delete_if { |k, v| v.nil? || v.to_s.empty? }
     end
 
     @connection_params = PG::Connection.parse_connect_args(*args).dup
@@ -38,7 +48,10 @@ class PG::Replication
       @connection_params << " replication='database'"
     end
 
-    _, @dbname = *@connection_params.match(/dbname='([^\s]+)'/)
+    _, @host = *@connection_params.match(/host='([^\s]+)'/)
+    @host = "localhost" if !@host
+    @port = @connection_params.match(/port='([^\s]+)'/)[1]&.to_i
+    @dbname = @connection_params.match(/dbname='([^\s]+)'/)[1]
 
     sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
     @connection_params.gsub!(sub, ' ')
@@ -47,7 +60,10 @@ class PG::Replication
     @connection_params.gsub!(sub, ' ') if @xlogpos
 
     sub, @tli = *@connection_params.match(/tli='([^\s]+)'/)
-    @connection_params.gsub!(sub, ' ') if @tli
+    if @tli
+      @connection_params.gsub!(sub, ' ')
+      @tli = @tli.to_i
+    end
 
     if !@options
       sub, @options = *@connection_params.match(/replication_options='([^']+)'/)
@@ -125,13 +141,14 @@ class PG::Replication
     ident = connection.exec('IDENTIFY_SYSTEM;')[0]
     sysid = ident['systemid']
 
-    tli ||= ident['timeline']
-    if tli != ident['timeline']
-      raise <<-MSG % [ tli, ident['timeline']]
+    if @tli.nil?
+      @tli =  ident['timeline']
+    elsif @tli != ident['timeline']
+      raise <<~MSG % [ @tli, ident['timeline']]
         The timeline on server differs from the specified timeline.
 
-        Specified timeline: %s
-        Server timeline: %s
+          Specified timeline: %i
+          Server timeline: %s
       MSG
     end
 
@@ -144,13 +161,13 @@ class PG::Replication
       MSG
     end
 
-    # Start replication at the last place left off according to th server.
-    xlogpos = "0/0" if !xlogpos
+    # Start replication at the last place left off according to the server.
+    xlogpos = 0 if !xlogpos
 
     query = [ "START_REPLICATION SLOT" ]
     query << PG::Connection.escape_string(slot)
     query << "LOGICAL"
-    query << xlogpos
+    query << xlogpos.to_s(16).upcase.rjust(10, '0').insert(2, "/")
 
     query_options = []
     @options.each do |k, v|

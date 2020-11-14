@@ -2,10 +2,12 @@ require "test_helper"
 
 class PGReplicationTest < Minitest::Test
 
+  attr_accessor :dbname, :host, :port, :slot
+
   def connection
     if instance_variable_defined?(:@connection)# || @connection
       if @connection.finished?
-        @connection = PG::Connection.new(dbname: "pg_replication_test")
+        @connection = PG::Connection.new(dbname: dbname)
       else
         @connection
       end
@@ -15,30 +17,39 @@ class PGReplicationTest < Minitest::Test
   end
 
   def setup
+    @dbname = "pg_replication_test"
+    @host = "localhost"
+    @port = 5432
+    @slot = "pg_replication_test_slot"
+
     system('createdb', 'pg_replication_test')
+    system('pg_recvlogical',
+      '-h', host,
+      '-p', port.to_s,
+      '-d', dbname,
+      '--slot', slot,
+      '--create-slot',
+      '-P', 'test_decoding')
   end
 
   def teardown
     connection.close
+
+    system('pg_recvlogical',
+      '-h', host || 'localhost',
+      '-p', port.to_s,
+      '-d', dbname,
+      '--slot', slot,
+      '--drop-slot',
+      '-P', 'test_decoding')
+
     system('dropdb', '--if-exists', 'pg_replication_test')
   end
 
   def test_replication
-    dbname = connection.conninfo_hash[:dbname]
-    host = connection.conninfo_hash[:host] || 'localhost'
-    port = connection.conninfo_hash[:port]
-
-    system('pg_recvlogical',
-      '-h', host,
-      '-p', port,
-      '-d', dbname,
-      '--slot', 'pg_replication_test_slot',
-      '--create-slot',
-      '-P', 'test_decoding')
-
     results = []
-    replicator = PG::Replication.new(connection.conninfo_hash.merge({
-      slot: 'pg_replication_test_slot',
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
@@ -50,7 +61,7 @@ class PGReplicationTest < Minitest::Test
     end
 
     # Wait for replication to start
-    sleep(0.1) while replicator.last_server_lsn.nil?
+    sleep(0.1) while !t.status.nil? && t.status && replicator.last_server_lsn.nil?
 
     connection.exec(<<-SQL)
       CREATE TABLE teas ( kind TEXT );
@@ -74,14 +85,46 @@ class PGReplicationTest < Minitest::Test
     if connection
       connection.exec("DROP TABLE IF EXISTS teas;")
     end
+  end
 
-    system('pg_recvlogical',
-      '-h', host || 'localhost',
-      '-p', port,
-      '-d', dbname,
-      '--slot', 'pg_replication_test_slot',
-      '--drop-slot',
-      '-P', 'test_decoding')
+  def test_initialize
+    options = {
+      dbname: dbname,
+      host: host,
+      port: port,
+      slot: slot,
+      xlogpos: "3B/6C036B08",
+      tli: 2,
+      replication_options: { "include-timestamp" => true }
+    }
+
+    replicator = PG::Replicator.new(options)
+    assert_equal dbname, replicator.dbname
+    assert_equal host, replicator.host
+    assert_equal port, replicator.port
+    assert_equal slot, replicator.slot
+    assert_equal "3B/6C036B08", replicator.xlogpos
+    assert_equal 2, replicator.tli
+    assert_equal({ "include-timestamp" => "on" }, replicator.options)
+  end
+
+  def test_tli
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      tli: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    error = assert_raises RuntimeError do
+      replicator.replicate do |res|
+        results << res
+        Thread.exit if results.size >= 5
+      end
+    end
+
+    assert_match /The timeline on server differs from the specified timeline./, error.message
+    assert_match /Specified timeline: 2/, error.message
+    assert_match /Server timeline: 1/, error.message
   end
 
 end
