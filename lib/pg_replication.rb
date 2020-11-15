@@ -13,9 +13,9 @@ class PG::Replicator
     :port,
     :dbname,
     :slot,
-    :sysid,
+    :systemid,
     :xlogpos,
-    :tli,
+    :timeline,
     :options,
     :last_received_lsn,
     :last_processed_lsn,
@@ -57,12 +57,29 @@ class PG::Replicator
     @connection_params.gsub!(sub, ' ')
 
     sub, @xlogpos = *@connection_params.match(/xlogpos='([^\s]+)'/)
-    @connection_params.gsub!(sub, ' ') if @xlogpos
-
-    sub, @tli = *@connection_params.match(/tli='([^\s]+)'/)
-    if @tli
+    if @xlogpos
       @connection_params.gsub!(sub, ' ')
-      @tli = @tli.to_i
+      @xlogpos = case @xlogpos
+      when /\h{2}\/\h{8}/
+        @xlogpos.sub("/", "").to_i(16)
+      else
+        Integer(@xlogpos)
+      end
+    else
+      # Start replication at the last place left off according to the server.
+      @xlogpos = 0 if !@xlogpos
+    end
+
+    sub, @timeline = *@connection_params.match(/timeline='([^\s]+)'/)
+    if @timeline
+      @connection_params.gsub!(sub, ' ')
+      @timeline = @timeline.to_i
+    end
+
+    sub, @systemid = *@connection_params.match(/systemid='([^\s]+)'/)
+    if @systemid
+      @connection_params.gsub!(sub, ' ')
+      @systemid = @systemid.to_i
     end
 
     if !@options
@@ -139,35 +156,15 @@ class PG::Replicator
   def initialize_replication
     #= Replication setup.
     ident = connection.exec('IDENTIFY_SYSTEM;')[0]
-    sysid = ident['systemid']
 
-    if @tli.nil?
-      @tli =  ident['timeline']
-    elsif @tli != ident['timeline']
-      raise <<~MSG % [ @tli, ident['timeline']]
-        The timeline on server differs from the specified timeline.
-
-          Specified timeline: %i
-          Server timeline: %s
-      MSG
-    end
-
-    if dbname != ident['dbname']
-      raise <<-MSG % [ dbname, ident['dbname']]
-        The database on server differs from the specified database.
-
-        Specified database: %s
-        Server database: %s
-      MSG
-    end
-
-    # Start replication at the last place left off according to the server.
-    xlogpos = 0 if !xlogpos
+    verify_systemid(ident)
+    verify_timeline(ident)
+    verify_dbname(ident)
 
     query = [ "START_REPLICATION SLOT" ]
     query << PG::Connection.escape_string(slot)
     query << "LOGICAL"
-    query << xlogpos.to_s(16).upcase.rjust(10, '0').insert(2, "/")
+    query << @xlogpos.to_s(16).upcase.rjust(10, '0').insert(2, "/")
 
     query_options = []
     @options.each do |k, v|
@@ -230,7 +227,48 @@ class PG::Replicator
     connection.finish if connection
   end
 
+  def close
+    connection.close
+  end
+
   private
+
+  def verify_systemid(ident)
+    if @systemid.nil?
+      @systemid =  ident['systemid']
+    elsif @systemid != ident['systemid']
+      raise <<~MSG % [ @systemid, ident['systemid']]
+        The systemid on server differs from the specified systemid.
+
+          Specified systemid: %i
+          Server systemid: %s
+      MSG
+    end
+  end
+
+  def verify_timeline(ident)
+    if @timeline.nil?
+      @timeline =  ident['timeline']
+    elsif @timeline != ident['timeline']
+      raise <<~MSG % [ @timeline, ident['timeline']]
+        The timeline on server differs from the specified timeline.
+
+          Specified timeline: %i
+          Server timeline: %s
+      MSG
+    end
+  end
+
+  def verify_dbname(ident)
+    if @dbname != ident['dbname']
+      raise <<-MSG % [ @dbname, ident['dbname']]
+        The database on server differs from the specified database.
+
+        Specified database: %s
+        Server database: %s
+      MSG
+    end
+  end
 
   def send_feedback
     self.last_status = Time.now

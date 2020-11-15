@@ -94,7 +94,7 @@ class PGReplicationTest < Minitest::Test
       port: port,
       slot: slot,
       xlogpos: "3B/6C036B08",
-      tli: 2,
+      timeline: 2,
       replication_options: { "include-timestamp" => true }
     }
 
@@ -103,28 +103,65 @@ class PGReplicationTest < Minitest::Test
     assert_equal host, replicator.host
     assert_equal port, replicator.port
     assert_equal slot, replicator.slot
-    assert_equal "3B/6C036B08", replicator.xlogpos
-    assert_equal 2, replicator.tli
+    assert_equal 255215233800, replicator.xlogpos
+    assert_equal 2, replicator.timeline
     assert_equal({ "include-timestamp" => "on" }, replicator.options)
   end
 
-  def test_tli
+  def test_timeline
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      tli: 2,
+      timeline: 2,
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
     error = assert_raises RuntimeError do
-      replicator.replicate do |res|
-        results << res
-        Thread.exit if results.size >= 5
-      end
+      replicator.initialize_replication
+    ensure
+      replicator.close
     end
 
-    assert_match /The timeline on server differs from the specified timeline./, error.message
-    assert_match /Specified timeline: 2/, error.message
-    assert_match /Server timeline: 1/, error.message
+    assert_match(/The timeline on server differs from the specified timeline./, error.message)
+    assert_match(/Specified timeline: 2/, error.message)
+    assert_match(/Server timeline: 1/, error.message)
+  end
+
+  def test_systemid
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      systemid: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    error = assert_raises RuntimeError do
+      replicator.initialize_replication
+    ensure
+      replicator.close
+    end
+
+    assert_match(/The systemid on server differs from the specified systemid./, error.message)
+    assert_match(/Specified systemid: 2/, error.message)
+    assert_match(/Server systemid: \d+/, error.message)
+  end
+
+  def test_xlogpos
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      xlogpos: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      xlogpos: "FF/FFFFFFFF",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
   end
 
 end
