@@ -197,7 +197,7 @@ class PG::Replicator
       begin
         result = connection.get_copy_data(async: true)
       rescue PG::Error => e
-        if e.message == "no COPY in progress"
+        if e.message == "no COPY in progress\n"
           next
         else
           raise
