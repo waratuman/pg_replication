@@ -60,7 +60,7 @@ class PG::Replicator
     if @xlogpos
       @connection_params.gsub!(sub, ' ')
       @xlogpos = case @xlogpos
-      when /\h{2}\/\h{8}/
+      when /\h{1,8}\/\h{1,8}/
         @xlogpos.sub("/", "").to_i(16)
       else
         Integer(@xlogpos)

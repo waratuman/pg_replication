@@ -156,7 +156,16 @@ class PGReplicationTest < Minitest::Test
 
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      xlogpos: "FF/FFFFFFFF",
+      xlogpos: "0/0",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      xlogpos: "FFFFFFFF/FFFFFFFF",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
