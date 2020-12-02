@@ -53,6 +53,11 @@ class PGReplicationTest < Minitest::Test
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
+    # Should be nil before starting, 0 is a LSN
+    assert_nil replicator.last_server_lsn
+    assert_nil replicator.last_received_lsn
+    assert_nil replicator.last_processed_lsn
+
     t = Thread.new do
       replicator.replicate do |res|
         results << res

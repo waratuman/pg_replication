@@ -97,8 +97,8 @@ class PG::Replicator
       @options = {}
     end
 
-    self.last_received_lsn = 0
-    self.last_processed_lsn = 0
+    self.last_received_lsn = nil
+    self.last_processed_lsn = nil
     self.last_status = Time.now
 
     replicate(&block) if block
