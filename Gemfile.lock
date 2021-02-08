@@ -1,6 +1,6 @@
 GIT
   remote: https://github.com/ged/ruby-pg.git
-  revision: fb465855ce1dd12cf7eb69c92af222052aa956ce
+  revision: 3cc3020fcbf6994e6a9845b05de895a41df316a7
   specs:
     pg (1.3.0.pre20200106132615)
 
@@ -13,7 +13,7 @@ PATH
 GEM
   remote: https://rubygems.org/
   specs:
-    minitest (5.14.0)
+    minitest (5.14.3)
     rake (12.3.3)
 
 PLATFORMS
@@ -26,4 +26,4 @@ DEPENDENCIES
   rake (~> 12.0)
 
 BUNDLED WITH
-   2.1.4
+   2.2.7

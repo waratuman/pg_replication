@@ -204,7 +204,8 @@ class PG::Replicator
         end
       end
 
-      next if !result
+      break if result.nil?    # Copy is done
+      next if result == false # No data yet
 
       case result[0]
       when 'k' # Keepalive
