@@ -105,7 +105,7 @@ class PG::Replicator
   end
 
   def connection
-    return @connection if instance_variable_defined?(:@connection)
+    return @connection if @connection
 
     # Establish Connection
     @connection = PG.connect(@connection_params)
