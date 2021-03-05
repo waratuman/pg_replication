@@ -105,7 +105,7 @@ class PG::Replicator
   end
 
   def connection
-    return @connection if @connection
+    return @connection if !@connection.nil?
 
     # Establish Connection
     @connection = PG.connect(@connection_params)
@@ -204,8 +204,17 @@ class PG::Replicator
         end
       end
 
-      break if result.nil?    # Copy is done
+      if result.nil? # Copy is done
+        # Read the final result, which should be CommandComplete
+        connection.get_last_result # The current implementation raises an error, so we don't have to?
+        # result = connection.get_result
+        # if result.result_status != PG::PGRES_COMMAND_OK
+        #   raise result.error_message
+        # end
+        break
+      end
       next if result == false # No data yet
+
 
       case result[0]
       when 'k' # Keepalive
@@ -226,10 +235,12 @@ class PG::Replicator
     end
   ensure
     connection.finish if connection
+    @connection = nil
   end
 
   def close
     connection.close
+    @connection = nil
   end
 
   private
