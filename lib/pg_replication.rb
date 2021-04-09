@@ -20,6 +20,7 @@ class PG::Replicator
     :last_received_lsn,
     :last_processed_lsn,
     :last_server_lsn,
+    :last_server_timestamp,
     :last_status
 
   def initialize(*args, &block)
@@ -218,14 +219,15 @@ class PG::Replicator
 
       case result[0]
       when 'k' # Keepalive
-        a1, a2 = result[1..8].unpack('NN')
+        a1, a2, b1, b2 = result[1..16].unpack('NNNN')
         self.last_server_lsn = (a1 << 32) + a2
+        self.last_server_timestamp = (b1 << 32) + b2
         send_feedback if result[9] == "\x01"
       when 'w' # WAL data
         a1, a2, b1, b2, c1, c2 = result[1..25].unpack('NNNNNN')
         self.last_received_lsn = (a1 << 32) + a2
         self.last_server_lsn = (b1 << 32) + b2
-        timestamp = (c1 << 32) + c2
+        self.last_server_timestamp = (c1 << 32) + c2
         data = result[25..-1].force_encoding(connection.internal_encoding)
         yield data
         self.last_processed_lsn = self.last_received_lsn
