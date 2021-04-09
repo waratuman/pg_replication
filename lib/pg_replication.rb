@@ -220,14 +220,16 @@ class PG::Replicator
       case result[0]
       when 'k' # Keepalive
         a1, a2, b1, b2 = result[1..16].unpack('NNNN')
+        b = (b1 << 32) + b2
         self.last_server_lsn = (a1 << 32) + a2
-        self.last_server_timestamp = (b1 << 32) + b2
+        self.last_server_timestamp = Time.at(b / 1000000, b % 1000000, :microsecond)
         send_feedback if result[9] == "\x01"
       when 'w' # WAL data
         a1, a2, b1, b2, c1, c2 = result[1..25].unpack('NNNNNN')
+        c = (c1 << 32) + c2
         self.last_received_lsn = (a1 << 32) + a2
         self.last_server_lsn = (b1 << 32) + b2
-        self.last_server_timestamp = (c1 << 32) + c2
+        self.last_server_timestamp = Time.at(c / 1000000, c % 1000000, :microsecond)
         data = result[25..-1].force_encoding(connection.internal_encoding)
         yield data
         self.last_processed_lsn = self.last_received_lsn
