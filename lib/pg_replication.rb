@@ -6,7 +6,8 @@ require "pg/replication/version"
 class PG::Replicator
   class Error < StandardError; end
 
-  EPOCH = Time.new(2000, 1, 1, 0, 0, 0)
+  EPOCH = Time.new(2000, 1, 1, 0, 0, 0, 0)
+  EPOCH_IN_MICROSECONDS = EPOCH.to_i * 1_000_000
 
   # To inspect an LSN @lsn.to_s(16).upcase.rjust(10, '0').insert(2, "/")
   attr_accessor :host,
@@ -220,14 +221,20 @@ class PG::Replicator
       case result[0]
       when 'k' # Keepalive
         a1, a2, b1, b2 = result[1..16].unpack('NNNN')
+        b = EPOCH_IN_MICROSECONDS + (b1 << 32) + b2
+
         self.last_server_lsn = (a1 << 32) + a2
-        self.last_message_send_time = (b1 << 32) + b2
-        send_feedback if result[9] == "\x01"
+        self.last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
+
+        send_feedback if result[17] == "\x01"
       when 'w' # WAL data
         a1, a2, b1, b2, c1, c2 = result[1..24].unpack('NNNNNN')
+
+        c = EPOCH_IN_MICROSECONDS + (c1 << 32) + c2
+
         self.last_received_lsn = (a1 << 32) + a2
         self.last_server_lsn = (b1 << 32) + b2
-        self.last_message_send_time = (c1 << 32) + c2
+        self.last_message_send_time = Time.at(c / 1_000_000, c % 1_000_000, :microsecond)
         data = result[25..-1].force_encoding(connection.internal_encoding)
         yield data
         self.last_processed_lsn = self.last_received_lsn
@@ -289,11 +296,11 @@ class PG::Replicator
     timestamp = ((last_status - EPOCH) * 1000000).to_i
     msg = ('r'.codepoints + [
       self.last_received_lsn >> 32,
-      self.last_received_lsn,
+      self.last_received_lsn + 1,
       self.last_received_lsn >> 32,
-      self.last_received_lsn,
+      self.last_received_lsn + 1,
       self.last_processed_lsn >> 32,
-      self.last_processed_lsn,
+      self.last_processed_lsn + 1,
       timestamp >> 32,
       timestamp,
       0

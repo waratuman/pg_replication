@@ -92,6 +92,57 @@ class PGReplicationTest < Minitest::Test
     end
   end
 
+  def test_last_server_lsn
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    # Should be nil before starting, 0 is a LSN
+    assert_nil replicator.last_server_lsn
+    assert_nil replicator.last_received_lsn
+    assert_nil replicator.last_processed_lsn
+
+    pause_replication = false
+    t = Thread.new do
+      results = []
+      replicator.replicate do |res|
+        results << res
+        sleep(0.1) while pause_replication
+        Thread.exit if results.size >= 5
+      end
+    end
+
+    # Wait for replication to start
+    sleep(0.1) while !t.status.nil? && t.status && replicator.last_server_lsn.nil?
+
+    pause_replication = true
+
+    last_server_lsn = connection.exec("SELECT pg_current_wal_lsn();").getvalue(0,0)
+    assert_equal last_server_lsn, lsn(replicator.last_server_lsn)
+    assert_in_delta Time.now, replicator.last_message_send_time, 1
+
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' )
+          , ( '蕎麦茶' )
+          , ( '魔茶' );
+    SQL
+
+    last_server_lsn = connection.exec("SELECT pg_current_wal_lsn();").getvalue(0,0)
+    pause_replication = false
+
+    t.join
+    assert_equal last_server_lsn, lsn(replicator.last_server_lsn)
+    assert_in_delta Time.now, replicator.last_message_send_time, 1
+  ensure
+    t.kill if t
+
+    if connection
+      connection.exec("DROP TABLE IF EXISTS teas;")
+    end
+  end
+
   def test_initialize
     options = {
       dbname: dbname,
