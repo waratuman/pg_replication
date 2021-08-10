@@ -15,12 +15,13 @@ class PG::Replicator
     :dbname,
     :slot,
     :systemid,
-    :xlogpos,
+    :start_position,
     :timeline,
+    :status_interval,
     :options,
+    :last_server_lsn,
     :last_received_lsn,
     :last_processed_lsn,
-    :last_server_lsn,
     :last_message_send_time,
     :last_status
 
@@ -58,18 +59,18 @@ class PG::Replicator
     sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
     @connection_params.gsub!(sub, ' ')
 
-    sub, @xlogpos = *@connection_params.match(/xlogpos='([^\s]+)'/)
-    if @xlogpos
+    sub, @start_position = *@connection_params.match(/start_position='([^\s]+)'/)
+    if @start_position
       @connection_params.gsub!(sub, ' ')
-      @xlogpos = case @xlogpos
+      @start_position = case @start_position
       when /\h{1,8}\/\h{1,8}/
-        @xlogpos.sub("/", "").to_i(16)
+        @start_position.sub("/", "").to_i(16)
       else
-        Integer(@xlogpos)
+        Integer(@start_position)
       end
     else
       # Start replication at the last place left off according to the server.
-      @xlogpos = 0 if !@xlogpos
+      @start_position = 0 if !@start_position
     end
 
     sub, @timeline = *@connection_params.match(/timeline='([^\s]+)'/)
@@ -83,6 +84,8 @@ class PG::Replicator
       @connection_params.gsub!(sub, ' ')
       @systemid = @systemid.to_i
     end
+
+    sub, @status_interval = *@connection_params.match(/status_interval='([^\s]+)'/)
 
     if !@options
       sub, @options = *@connection_params.match(/replication_options='([^']+)'/)
@@ -99,9 +102,15 @@ class PG::Replicator
       @options = {}
     end
 
-    self.last_received_lsn = nil
-    self.last_processed_lsn = nil
-    self.last_status = Time.now
+
+    @status_interval ||= connection.exec(<<~SQL).getvalue(0,0).to_i
+      SELECT setting :: int FROM pg_catalog.pg_settings WHERE name = 'wal_receiver_status_interval';
+    SQL
+
+    @last_server_lsn = 0
+    @last_received_lsn = 0
+    @last_processed_lsn = 0
+    @last_status = Time.now
 
     replicate(&block) if block
   end
@@ -166,7 +175,7 @@ class PG::Replicator
     query = [ "START_REPLICATION SLOT" ]
     query << PG::Connection.escape_string(slot)
     query << "LOGICAL"
-    query << @xlogpos.to_s(16).upcase.rjust(10, '0').insert(2, "/")
+    query << @start_position.to_s(16).upcase.rjust(10, '0').insert(2, "/")
 
     query_options = []
     @options.each do |k, v|
@@ -191,13 +200,13 @@ class PG::Replicator
     initialize_replication
 
     loop do
-      send_feedback if Time.now - self.last_status > 10
+      send_feedback if Time.now - last_status > status_interval
       connection.consume_input
 
       next if connection.is_busy
 
       begin
-        result = connection.get_copy_data(async: true)
+        result = connection.get_copy_data(async: true)#, decoder: TYPE_MAP)
       rescue PG::Error => e
         if e.message == "no COPY in progress\n"
           next
@@ -217,29 +226,30 @@ class PG::Replicator
       end
       next if result == false # No data yet
 
+      case identifier = byte(result)
+      when 107 # Byte1('k') Keepalive
+        a = int64(result)
+        b = int64(result) + EPOCH_IN_MICROSECONDS
+        c = byte(result)
 
-      case result[0]
-      when 'k' # Keepalive
-        a1, a2, b1, b2 = result[1..16].unpack('NNNN')
-        b = EPOCH_IN_MICROSECONDS + (b1 << 32) + b2
+        @last_server_lsn = a if a != 0
+        @last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
 
-        self.last_server_lsn = (a1 << 32) + a2
-        self.last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
+        send_feedback if c == 1
+      when 119 # Byte1('w') WAL data
+        a = int64(result)
+        b = int64(result)
+        c = int64(result) + EPOCH_IN_MICROSECONDS
 
-        send_feedback if result[17] == "\x01"
-      when 'w' # WAL data
-        a1, a2, b1, b2, c1, c2 = result[1..24].unpack('NNNNNN')
+        @last_received_lsn = a if a != 0
+        @last_server_lsn = b if b != 0
+        @last_message_send_time = Time.at(c / 1_000_000, c % 1_000_000, :microsecond)
 
-        c = EPOCH_IN_MICROSECONDS + (c1 << 32) + c2
-
-        self.last_received_lsn = (a1 << 32) + a2
-        self.last_server_lsn = (b1 << 32) + b2
-        self.last_message_send_time = Time.at(c / 1_000_000, c % 1_000_000, :microsecond)
-        data = result[25..-1].force_encoding(connection.internal_encoding)
-        yield data
-        self.last_processed_lsn = self.last_received_lsn
+        payload = result.force_encoding(connection.internal_encoding)
+        yield payload
+        @last_processed_lsn = @last_received_lsn
       else
-        raise "unrecognized streaming header: \"%c\"" % [ result[0] ]
+        raise "unrecognized streaming header: \"%c\"" % [ identifier ]
       end
     end
   ensure
@@ -253,6 +263,16 @@ class PG::Replicator
   end
 
   private
+
+  def uint8(buffer)
+    buffer.slice!(0).unpack('C')[0]
+  end
+  alias :byte :uint8
+
+  def int64(buffer)
+    a, b = buffer.slice!(0, 8).unpack('NN')
+    (a << 32) + b
+  end
 
   def verify_systemid(ident)
     if @systemid.nil?
@@ -292,15 +312,15 @@ class PG::Replicator
   end
 
   def send_feedback
-    self.last_status = Time.now
+    @last_status = Time.now
     timestamp = ((last_status - EPOCH) * 1000000).to_i
     msg = ('r'.codepoints + [
-      self.last_received_lsn >> 32,
-      self.last_received_lsn + 1,
-      self.last_received_lsn >> 32,
-      self.last_received_lsn + 1,
-      self.last_processed_lsn >> 32,
-      self.last_processed_lsn + 1,
+      @last_received_lsn >> 32,
+      @last_received_lsn + 1,
+      @last_received_lsn >> 32,
+      @last_received_lsn + 1,
+      @last_processed_lsn >> 32,
+      @last_processed_lsn + 1,
       timestamp >> 32,
       timestamp,
       0

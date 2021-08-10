@@ -43,7 +43,7 @@ class PGReplicationTest < Minitest::Test
       '--drop-slot',
       '-P', 'test_decoding')
 
-    system('dropdb', '--if-exists', 'pg_replication_test')
+    system('dropdb', '--if-exists', '--force', 'pg_replication_test')
   end
 
   def test_replication
@@ -53,10 +53,11 @@ class PGReplicationTest < Minitest::Test
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
-    # Should be nil before starting, 0 is a LSN
-    assert_nil replicator.last_server_lsn
-    assert_nil replicator.last_received_lsn
-    assert_nil replicator.last_processed_lsn
+    # LSN should be 0 before starting. 0 is an invalid LSN according to
+    # https://github.com/postgres/postgres/blob/2dbe8905711ba09a2214b6e835f8f0c2c4981cb3/src/include/access/xlogdefs.h#L23-L28
+    assert_equal 0, replicator.last_server_lsn
+    assert_equal 0, replicator.last_received_lsn
+    assert_equal 0, replicator.last_processed_lsn
 
     t = Thread.new do
       replicator.replicate do |res|
@@ -98,10 +99,11 @@ class PGReplicationTest < Minitest::Test
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
-    # Should be nil before starting, 0 is a LSN
-    assert_nil replicator.last_server_lsn
-    assert_nil replicator.last_received_lsn
-    assert_nil replicator.last_processed_lsn
+    # LSN should be 0 before starting. 0 is an invalid LSN according to
+    # https://github.com/postgres/postgres/blob/2dbe8905711ba09a2214b6e835f8f0c2c4981cb3/src/include/access/xlogdefs.h#L23-L28
+    assert_equal 0, replicator.last_server_lsn
+    assert_equal 0, replicator.last_received_lsn
+    assert_equal 0, replicator.last_processed_lsn
 
     pause_replication = false
     t = Thread.new do
@@ -114,7 +116,7 @@ class PGReplicationTest < Minitest::Test
     end
 
     # Wait for replication to start
-    sleep(0.1) while !t.status.nil? && t.status && replicator.last_server_lsn.nil?
+    sleep(0.1) while !t.status.nil? && t.status && replicator.last_server_lsn == 0
 
     pause_replication = true
 
@@ -149,8 +151,9 @@ class PGReplicationTest < Minitest::Test
       host: host,
       port: port,
       slot: slot,
-      xlogpos: "3B/6C036B08",
+      start_position: "3B/6C036B08",
       timeline: 2,
+      status_interval: 10,
       replication_options: { "include-timestamp" => true }
     }
 
@@ -159,7 +162,7 @@ class PGReplicationTest < Minitest::Test
     assert_equal host, replicator.host
     assert_equal port, replicator.port
     assert_equal slot, replicator.slot
-    assert_equal 255215233800, replicator.xlogpos
+    assert_equal 255215233800, replicator.start_position
     assert_equal 2, replicator.timeline
     assert_equal({ "include-timestamp" => "on" }, replicator.options)
   end
@@ -200,10 +203,10 @@ class PGReplicationTest < Minitest::Test
     assert_match(/Server systemid: \d+/, error.message)
   end
 
-  def test_xlogpos
+  def test_start_position
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      xlogpos: 2,
+      start_position: 2,
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
@@ -212,7 +215,7 @@ class PGReplicationTest < Minitest::Test
 
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      xlogpos: "0/0",
+      start_position: "0/0",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
@@ -221,7 +224,7 @@ class PGReplicationTest < Minitest::Test
 
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      xlogpos: "FFFFFFFF/FFFFFFFF",
+      start_position: "FFFFFFFF/FFFFFFFF",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
