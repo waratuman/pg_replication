@@ -120,8 +120,7 @@ class PG::Replicator
 
     # Establish Connection
     @connection = PG.connect(@connection_params)
-    @connection.setnonblocking(true)
-    
+
     if @connection.conninfo_hash[:replication] != 'database'
       raise PG::Error.new("Could not establish database-specific replication connection");
     end
@@ -228,7 +227,7 @@ class PG::Replicator
       elsif result === false
         selects([connection.socket_io], nil, nil, status_interval)
       end
-      
+
       next if result == false # No data yet
 
       case identifier = byte(result)
