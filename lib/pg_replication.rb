@@ -225,7 +225,7 @@ class PG::Replicator
         # end
         break
       elsif result === false
-        selects([connection.socket_io], nil, nil, status_interval)
+        select([connection.socket_io], nil, nil, status_interval)
       end
 
       next if result == false # No data yet
