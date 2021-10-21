@@ -59,7 +59,7 @@ class PG::Replicator
     sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
     @connection_params.gsub!(sub, ' ')
 
-    sub, @start_position = *@connection_params.match(/start_position='([^\s]+)'/)
+    sub, _, @start_position = *@connection_params.match(/(start_position|startpos)='([^\s]+)'/)
     if @start_position
       @connection_params.gsub!(sub, ' ')
       @start_position = case @start_position
@@ -71,6 +71,19 @@ class PG::Replicator
     else
       # Start replication at the last place left off according to the server.
       @start_position = 0 if !@start_position
+    end
+
+    sub, _, @end_position = *@connection_params.match(/(end_position|endpos)='([^\s]+)'/)
+    if @end_position
+      @connection_params.gsub!(sub, ' ')
+      @end_position = case @end_position
+      when /\h{1,8}\/\h{1,8}/
+        @end_position.sub("/", "").to_i(16)
+      else
+        Integer(@end_position)
+      end
+    else
+      @end_position = 0
     end
 
     sub, @timeline = *@connection_params.match(/timeline='([^\s]+)'/)
@@ -252,6 +265,10 @@ class PG::Replicator
         payload = result.force_encoding(connection.internal_encoding)
         yield payload
         @last_processed_lsn = @last_received_lsn
+
+        if @end_position != 0
+          break if @last_processed_lsn >= @end_position
+        end
       else
         raise "unrecognized streaming header: \"%c\"" % [ identifier ]
       end

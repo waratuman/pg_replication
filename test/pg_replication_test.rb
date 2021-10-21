@@ -47,6 +47,13 @@ class PGReplicationTest < Minitest::Test
   end
 
   def test_replication
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' )
+          , ( '蕎麦茶' )
+          , ( '魔茶' );
+    SQL
+
     results = []
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
@@ -59,24 +66,10 @@ class PGReplicationTest < Minitest::Test
     assert_equal 0, replicator.last_received_lsn
     assert_equal 0, replicator.last_processed_lsn
 
-    t = Thread.new do
-      replicator.replicate do |res|
-        results << res
-        Thread.exit if results.size >= 5
-      end
+    replicator.replicate do |res|
+      results << res
+      break if results.size >= 5
     end
-
-    # Wait for replication to start
-    sleep(0.1) while !t.status.nil? && t.status && replicator.last_server_lsn.nil?
-
-    connection.exec(<<-SQL)
-      CREATE TABLE teas ( kind TEXT );
-      INSERT INTO teas VALUES ( '煎茶' )
-          , ( '蕎麦茶' )
-          , ( '魔茶' );
-    SQL
-
-    t.join
 
     assert_match(/^BEGIN\s\d+$/, results[0])
     [ '煎茶', '蕎麦茶', '魔茶' ].each_with_index do |tea, i|
@@ -86,8 +79,55 @@ class PGReplicationTest < Minitest::Test
     assert_match(/^COMMIT\s\d+\s\(at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?[-+]\d{2}\)$/,
       results[4])
   ensure
-    t.kill if t
+    if connection
+      connection.exec("DROP TABLE IF EXISTS teas;")
+    end
+  end
 
+  def test_replication_with_endpos
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' )
+          , ( '蕎麦茶' )
+          , ( '魔茶' );
+    SQL
+
+    lsn = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
+      SELECT pg_current_wal_insert_lsn() AS lsn;
+    SQL
+
+    connection.exec(<<~SQL)
+      INSERT INTO teas (kind) VALUES ( 'ハーブティー' );
+    SQL
+
+    results = []
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      endpos: lsn,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    # LSN should be 0 before starting. 0 is an invalid LSN according to
+    # https://github.com/postgres/postgres/blob/2dbe8905711ba09a2214b6e835f8f0c2c4981cb3/src/include/access/xlogdefs.h#L23-L28
+    assert_equal 0, replicator.last_server_lsn
+    assert_equal 0, replicator.last_received_lsn
+    assert_equal 0, replicator.last_processed_lsn
+
+    replicator.replicate do |res|
+      results << res
+    end
+
+    assert_match(/^BEGIN\s\d+$/, results[0])
+    [ '煎茶', '蕎麦茶', '魔茶' ].each_with_index do |tea, i|
+      assert_equal("table public.teas: INSERT: kind[text]:'#{tea}'",
+        results[i + 1])
+    end
+
+    assert !results.any? { |x| x == "table public.teas: INSERT: kind[text]:'ハーブティー'" }
+
+    assert_match(/^COMMIT\s\d+\s\(at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?[-+]\d{2}\)$/,
+      results[4])
+  ensure
     if connection
       connection.exec("DROP TABLE IF EXISTS teas;")
     end
@@ -232,4 +272,90 @@ class PGReplicationTest < Minitest::Test
     replicator.close
   end
 
+  def test_startpos
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      startpos: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      startpos: "0/0",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      startpos: "FFFFFFFF/FFFFFFFF",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+  end
+
+  def test_end_position
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      end_position: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      end_position: "0/0",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      end_position: "FFFFFFFF/FFFFFFFF",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+  end
+
+  def test_endpos
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      endpos: 2,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      endpos: "0/0",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      endpos: "FFFFFFFF/FFFFFFFF",
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    replicator.initialize_replication
+    replicator.close
+  end
 end
