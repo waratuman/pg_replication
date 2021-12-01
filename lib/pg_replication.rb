@@ -16,6 +16,7 @@ class PG::Replicator
     :slot,
     :systemid,
     :start_position,
+    :end_position,
     :timeline,
     :status_interval,
     :options,
@@ -64,7 +65,7 @@ class PG::Replicator
       @connection_params.gsub!(sub, ' ')
       @start_position = case @start_position
       when /\h{1,8}\/\h{1,8}/
-        @start_position.sub("/", "").to_i(16)
+        @start_position.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
       else
         Integer(@start_position)
       end
@@ -78,7 +79,7 @@ class PG::Replicator
       @connection_params.gsub!(sub, ' ')
       @end_position = case @end_position
       when /\h{1,8}\/\h{1,8}/
-        @end_position.sub("/", "").to_i(16)
+        @end_position.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
       else
         Integer(@end_position)
       end

@@ -258,6 +258,7 @@ class PGReplicationTest < Minitest::Test
       start_position: "0/0",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 0, replicator.start_position
 
     replicator.initialize_replication
     replicator.close
@@ -267,6 +268,7 @@ class PGReplicationTest < Minitest::Test
       start_position: "FFFFFFFF/FFFFFFFF",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 2 ** 64 - 1, replicator.start_position
 
     replicator.initialize_replication
     replicator.close
@@ -287,6 +289,7 @@ class PGReplicationTest < Minitest::Test
       startpos: "0/0",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 0, replicator.start_position
 
     replicator.initialize_replication
     replicator.close
@@ -296,6 +299,7 @@ class PGReplicationTest < Minitest::Test
       startpos: "FFFFFFFF/FFFFFFFF",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 2 ** 64 - 1, replicator.start_position
 
     replicator.initialize_replication
     replicator.close
@@ -316,6 +320,7 @@ class PGReplicationTest < Minitest::Test
       end_position: "0/0",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 0, replicator.end_position
 
     replicator.initialize_replication
     replicator.close
@@ -325,6 +330,7 @@ class PGReplicationTest < Minitest::Test
       end_position: "FFFFFFFF/FFFFFFFF",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 2 ** 64 - 1, replicator.end_position
 
     replicator.initialize_replication
     replicator.close
@@ -345,6 +351,7 @@ class PGReplicationTest < Minitest::Test
       endpos: "0/0",
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
+    assert_equal 0, replicator.end_position
 
     replicator.initialize_replication
     replicator.close
