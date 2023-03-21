@@ -365,4 +365,17 @@ class PGReplicationTest < Minitest::Test
     replicator.initialize_replication
     replicator.close
   end
+
+  def test_feedback_callback
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      replication_options: { "include-timestamp" => true },
+    }).select { |_, v| !v.nil? })
+
+    # Feedback is nil wal log
+    replicator.replicate do |wal|
+      break if wal.nil?
+    end
+  end
+
 end

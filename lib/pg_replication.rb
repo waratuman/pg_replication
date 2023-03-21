@@ -211,11 +211,11 @@ class PG::Replicator
     result
   end
 
-  def replicate
+  def replicate(&block)
     initialize_replication
 
     loop do
-      send_feedback if Time.now - last_status > status_interval
+      send_feedback(&block) if Time.now - last_status > status_interval
       connection.consume_input
 
       next if connection.is_busy
@@ -253,7 +253,7 @@ class PG::Replicator
         @last_server_lsn = a if a != 0
         @last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
 
-        send_feedback if c == 1
+        send_feedback(&block) if c == 1
       when 119 # Byte1('w') WAL data
         a = int64(result)
         b = int64(result)
@@ -350,6 +350,8 @@ class PG::Replicator
 
     connection.put_copy_data(msg)
     connection.flush
+
+    yield if block_given?
   end
 
 end

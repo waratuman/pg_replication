@@ -1,9 +1,3 @@
-GIT
-  remote: https://github.com/ged/ruby-pg.git
-  revision: 3cc3020fcbf6994e6a9845b05de895a41df316a7
-  specs:
-    pg (1.3.0.pre20200106132615)
-
 PATH
   remote: .
   specs:
@@ -14,6 +8,7 @@ GEM
   remote: https://rubygems.org/
   specs:
     minitest (5.14.3)
+    pg (1.4.6)
     rake (12.3.3)
 
 PLATFORMS
@@ -21,7 +16,7 @@ PLATFORMS
 
 DEPENDENCIES
   minitest (~> 5.0)
-  pg!
+  pg
   pg_replication!
   rake (~> 12.0)
 
