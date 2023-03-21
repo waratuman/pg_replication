@@ -351,7 +351,7 @@ class PG::Replicator
     connection.put_copy_data(msg)
     connection.flush
 
-    yield if block_given?
+    yield(nil) if block_given?
   end
 
 end
