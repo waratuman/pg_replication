@@ -84,7 +84,7 @@ class PGReplicationTest < Minitest::Test
     end
   end
 
-  def test_replication_with_endpos
+  def test_replication_with_startpos
     connection.exec(<<-SQL)
       CREATE TABLE teas ( kind TEXT );
       INSERT INTO teas VALUES ( '煎茶' )
@@ -92,7 +92,7 @@ class PGReplicationTest < Minitest::Test
           , ( '魔茶' );
     SQL
 
-    lsn = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
+    startpos = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
       SELECT pg_current_wal_insert_lsn() AS lsn;
     SQL
 
@@ -100,10 +100,15 @@ class PGReplicationTest < Minitest::Test
       INSERT INTO teas (kind) VALUES ( 'ハーブティー' );
     SQL
 
+    endpos = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
+      SELECT pg_current_wal_insert_lsn() AS lsn;
+    SQL
+
     results = []
     replicator = PG::Replicator.new(connection.conninfo_hash.merge({
       slot: slot,
-      endpos: lsn,
+      startpos: startpos,
+      endpos: endpos,
       replication_options: { "include-timestamp" => true }
     }).select { |_, v| !v.nil? })
 
@@ -116,6 +121,63 @@ class PGReplicationTest < Minitest::Test
     replicator.replicate do |res|
       results << res
     end
+
+    assert_equal lsn(endpos), lsn(replicator.last_received_lsn)
+    assert_equal lsn(endpos), lsn(replicator.last_processed_lsn)
+
+    assert_match(/^BEGIN\s\d+$/, results[0])
+    [ 'ハーブティー' ].each_with_index do |tea, i|
+      assert_equal("table public.teas: INSERT: kind[text]:'#{tea}'",
+        results[i + 1])
+    end
+
+    [ '煎茶', '蕎麦茶', '魔茶' ].each_with_index do |tea, i|
+      assert !results.any? { |x| x == "table public.teas: INSERT: kind[text]:'#{ tea }'" }
+    end
+
+    assert_match(/^COMMIT\s\d+\s\(at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?[-+]\d{2}\)$/,
+      results[2])
+  ensure
+    if connection
+      connection.exec("DROP TABLE IF EXISTS teas;")
+    end
+  end
+
+  def test_replication_with_endpos
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' )
+          , ( '蕎麦茶' )
+          , ( '魔茶' );
+    SQL
+
+    endpos = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
+      SELECT pg_current_wal_insert_lsn() AS lsn;
+    SQL
+
+    connection.exec(<<~SQL)
+      INSERT INTO teas (kind) VALUES ( 'ハーブティー' );
+    SQL
+
+    results = []
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      endpos: endpos,
+      replication_options: { "include-timestamp" => true }
+    }).select { |_, v| !v.nil? })
+
+    # LSN should be 0 before starting. 0 is an invalid LSN according to
+    # https://github.com/postgres/postgres/blob/2dbe8905711ba09a2214b6e835f8f0c2c4981cb3/src/include/access/xlogdefs.h#L23-L28
+    assert_equal 0, replicator.last_server_lsn
+    assert_equal 0, replicator.last_received_lsn
+    assert_equal 0, replicator.last_processed_lsn
+
+    replicator.replicate do |res|
+      results << res
+    end
+
+    assert_equal lsn(endpos), lsn(replicator.last_received_lsn)
+    assert_equal lsn(endpos), lsn(replicator.last_processed_lsn)
 
     assert_match(/^BEGIN\s\d+$/, results[0])
     [ '煎茶', '蕎麦茶', '魔茶' ].each_with_index do |tea, i|

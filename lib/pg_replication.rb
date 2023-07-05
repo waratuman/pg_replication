@@ -26,6 +26,9 @@ class PG::Replicator
     :last_message_send_time,
     :last_status
 
+  # Note that the startpos option starts with the transaction that contains the
+  # LSN, so if a transaction starts at LSN 1 and a startpos of 3 is specified
+  # Postgres will start replication at LSN 1, even though 3 was specified.
   def initialize(*args, &block)
     case args[0]
     when Hash
@@ -216,6 +219,9 @@ class PG::Replicator
 
     loop do
       send_feedback(&block) if Time.now - last_status > status_interval
+      
+      break if @end_position != 0 && @last_processed_lsn >= @end_position
+      
       connection.consume_input
 
       next if connection.is_busy
@@ -266,14 +272,12 @@ class PG::Replicator
         payload = result.force_encoding(connection.internal_encoding)
         yield payload
         @last_processed_lsn = @last_received_lsn
-
-        if @end_position != 0
-          break if @last_processed_lsn >= @end_position
-        end
       else
         raise "unrecognized streaming header: \"%c\"" % [ identifier ]
       end
     end
+
+    send_feedback(&block)
   ensure
     connection.finish if connection
     @connection = nil
