@@ -269,6 +269,8 @@ class PG::Replicator
         @last_server_lsn = b if b != 0
         @last_message_send_time = Time.at(c / 1_000_000, c % 1_000_000, :microsecond)
 
+        break if @end_position != 0 && @last_received_lsn > @end_position
+
         payload = result.force_encoding(connection.internal_encoding)
         yield payload
         @last_processed_lsn = @last_received_lsn
