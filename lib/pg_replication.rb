@@ -219,9 +219,9 @@ class PG::Replicator
 
     loop do
       send_feedback(&block) if Time.now - last_status > status_interval
-      
+
       break if @end_position != 0 && @last_processed_lsn >= @end_position
-      
+
       connection.consume_input
 
       next if connection.is_busy
@@ -341,10 +341,10 @@ class PG::Replicator
     @last_status = Time.now
     timestamp = ((last_status - EPOCH) * 1000000).to_i
     msg = ('r'.codepoints + [
-      @last_received_lsn >> 32,
-      @last_received_lsn + 1,
-      @last_received_lsn >> 32,
-      @last_received_lsn + 1,
+      @last_processed_lsn >> 32,
+      @last_processed_lsn + 1,
+      @last_processed_lsn >> 32,
+      @last_processed_lsn + 1,
       @last_processed_lsn >> 32,
       @last_processed_lsn + 1,
       timestamp >> 32,

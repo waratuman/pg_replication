@@ -100,8 +100,8 @@ class PGReplicationTest < Minitest::Test
       INSERT INTO teas (kind) VALUES ( 'ハーブティー' );
     SQL
 
-    endpos = connection.exec(<<~SQL)[0]['lsn']#.split("/").pack('H4H4').bytes.inject(0) { |acc, x| (acc << 8) + x }
-      SELECT pg_current_wal_insert_lsn() AS lsn;
+    endpos = connection.exec(<<~SQL)[0]['lsn']
+      SELECT pg_current_wal_lsn() AS lsn;
     SQL
 
     results = []
