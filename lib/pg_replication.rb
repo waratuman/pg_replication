@@ -342,17 +342,15 @@ class PG::Replicator
   def send_feedback
     @last_status = Time.now
     timestamp = ((last_status - EPOCH) * 1000000).to_i
+
+    lsn_location = @last_processed_lsn + 1
     msg = ('r'.codepoints + [
-      @last_processed_lsn >> 32,
-      @last_processed_lsn + 1,
-      @last_processed_lsn >> 32,
-      @last_processed_lsn + 1,
-      @last_processed_lsn >> 32,
-      @last_processed_lsn + 1,
-      timestamp >> 32,
+      lsn_location,
+      lsn_location,
+      lsn_location,
       timestamp,
       0
-    ]).pack('CNNNNNNNNC')
+    ]).pack('CQ>Q>Q>Q>C')
 
     connection.put_copy_data(msg)
     connection.flush
