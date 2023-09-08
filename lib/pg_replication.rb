@@ -343,7 +343,12 @@ class PG::Replicator
     @last_status = Time.now
     timestamp = ((last_status - EPOCH) * 1000000).to_i
 
-    lsn_location = @last_processed_lsn + 1
+    lsn_location = if @last_processed_lsn == 0
+      0
+    else
+      @last_processed_lsn + 1
+    end
+    
     msg = ('r'.codepoints + [
       lsn_location,
       lsn_location,
