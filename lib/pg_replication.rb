@@ -10,7 +10,10 @@ class PG::Replicator
   EPOCH_IN_MICROSECONDS = EPOCH.to_i * 1_000_000
 
   # To inspect an LSN @lsn.to_s(16).upcase.rjust(10, '0').insert(2, "/")
-  attr_accessor :host,
+  MSG_KEEPALIVE = 'k'.ord  # 107
+  MSG_WAL_DATA  = 'w'.ord  # 119
+
+  attr_reader :host,
     :port,
     :dbname,
     :slot,
@@ -30,95 +33,10 @@ class PG::Replicator
   # LSN, so if a transaction starts at LSN 1 and a startpos of 3 is specified
   # Postgres will start replication at LSN 1, even though 3 was specified.
   def initialize(*args, &block)
-    case args[0]
-    when Hash
-      @options = if args[0][:replication_options]
-        args[0][:replication_options].map do |k, v|
-          PG::Connection.escape_string(k.to_s) <<
-            "=" <<
-            (PG::Connection.escape_string(case v
-              when true then "on"
-              when false then "off"
-              else v.to_s
-              end))
-        end.join(' ')
-      else
-        String.new
-      end
-      args[0].delete(:replication_options)
-      args[0].delete_if { |k, v| v.nil? || v.to_s.empty? }
-    end
-
-    @connection_params = PG::Connection.parse_connect_args(*args).dup
-
-    if !(@connection_params =~ /replication='?database/)
-      @connection_params << " replication='database'"
-    end
-
-    _, @host = *@connection_params.match(/host='([^\s]+)'/)
-    @host = "localhost" if !@host
-    @port = @connection_params.match(/port='([^\s]+)'/)[1]&.to_i
-    @dbname = @connection_params.match(/dbname='([^\s]+)'/)[1]
-
-    sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
-    @connection_params.gsub!(sub, ' ')
-
-    sub, _, @start_position = *@connection_params.match(/(start_position|startpos)='([^\s]+)'/)
-    if @start_position
-      @connection_params.gsub!(sub, ' ')
-      @start_position = case @start_position
-      when /\h{1,8}\/\h{1,8}/
-        @start_position.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
-      else
-        Integer(@start_position)
-      end
-    else
-      # Start replication at the last place left off according to the server.
-      @start_position = 0 if !@start_position
-    end
-
-    sub, _, @end_position = *@connection_params.match(/(end_position|endpos)='([^\s]+)'/)
-    if @end_position
-      @connection_params.gsub!(sub, ' ')
-      @end_position = case @end_position
-      when /\h{1,8}\/\h{1,8}/
-        @end_position.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
-      else
-        Integer(@end_position)
-      end
-    else
-      @end_position = 0
-    end
-
-    sub, @timeline = *@connection_params.match(/timeline='([^\s]+)'/)
-    if @timeline
-      @connection_params.gsub!(sub, ' ')
-      @timeline = @timeline.to_i
-    end
-
-    sub, @systemid = *@connection_params.match(/systemid='([^\s]+)'/)
-    if @systemid
-      @connection_params.gsub!(sub, ' ')
-      @systemid = @systemid.to_i
-    end
-
-    sub, @status_interval = *@connection_params.match(/status_interval='([^\s]+)'/)
-
-    if !@options
-      sub, @options = *@connection_params.match(/replication_options='([^']+)'/)
-      @connection_params.gsub!(sub, ' ') if @options
-    end
-
-    if @options
-      @options = @options.split(/\s+/).inject({}) do |acc, x|
-        k, v = x.split('=')
-        acc[k] = v
-        acc
-      end
-    else
-      @options = {}
-    end
-
+    @options = extract_replication_options(args)
+    @connection_params = build_connection_params(args)
+    extract_connection_params
+    extract_replication_params
 
     @status_interval ||= connection.exec(<<~SQL).getvalue(0,0).to_i
       SELECT setting :: int FROM pg_catalog.pg_settings WHERE name = 'wal_receiver_status_interval';
@@ -139,13 +57,13 @@ class PG::Replicator
     @connection = PG.connect(@connection_params)
 
     if @connection.conninfo_hash[:replication] != 'database'
-      raise PG::Error.new("Could not establish database-specific replication connection");
+      raise Error, "Could not establish database-specific replication connection"
     end
 
     if !@connection
-      raise "Unable to create a connection"
+      raise Error, "Unable to create a connection"
     elsif @connection.status == PG::CONNECTION_BAD
-      raise "Connection failed: %s" % [ @connection.error_message ]
+      raise Error, "Connection failed: %s" % [ @connection.error_message ]
     end
 
     ##
@@ -160,7 +78,7 @@ class PG::Replicator
       result = @connection.exec("SELECT pg_catalog.set_config('search_path', '', false);")
 
       if result.result_status != PG::PGRES_TUPLES_OK
-        raise "could not clear search_path: %s" % [ @connection.error_message ]
+        raise Error, "could not clear search_path: %s" % [ @connection.error_message ]
       end
     end
 
@@ -169,11 +87,11 @@ class PG::Replicator
     # the server we are connecting to.
     tmpparam = @connection.parameter_status("integer_datetimes")
     if !tmpparam
-      raise "could not determine server setting for integer_datetimes"
+      raise Error, "could not determine server setting for integer_datetimes"
     end
 
     if tmpparam != "on"
-      raise "integer_datetimes compile flag does not match server"
+      raise Error, "integer_datetimes compile flag does not match server"
     end
 
     @connection
@@ -208,7 +126,7 @@ class PG::Replicator
     result = connection.exec(query.join(" "))
 
     if result.result_status != PG::PGRES_COPY_BOTH
-      raise PG::InvalidResultStatus.new("Could not send replication command \"%s\"" % [ query ])
+      raise Error, "Could not send replication command \"%s\"" % [ query ]
     end
 
     result
@@ -251,26 +169,26 @@ class PG::Replicator
       next if result == false # No data yet
 
       case identifier = byte(result)
-      when 107 # Byte1('k') Keepalive
-        a = int64(result)
-        b = int64(result) + EPOCH_IN_MICROSECONDS
-        c = byte(result)
+      when MSG_KEEPALIVE
+        server_lsn = int64(result)
+        send_time_us = int64(result) + EPOCH_IN_MICROSECONDS
+        reply_requested = byte(result)
 
-        @last_server_lsn = a if a != 0
-        @last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
+        @last_server_lsn = server_lsn if server_lsn != 0
+        @last_message_send_time = Time.at(send_time_us / 1_000_000, send_time_us % 1_000_000, :microsecond)
 
-        send_feedback(&block) if c == 1
+        send_feedback(&block) if reply_requested == 1
 
         # If we've caught up to or past the end position, break
         break if @end_position != 0 && @last_server_lsn >= @end_position
-      when 119 # Byte1('w') WAL data
-        a = int64(result)
-        b = int64(result)
-        c = int64(result) + EPOCH_IN_MICROSECONDS
+      when MSG_WAL_DATA
+        wal_start = int64(result)
+        server_lsn = int64(result)
+        send_time_us = int64(result) + EPOCH_IN_MICROSECONDS
 
-        @last_received_lsn = a if a != 0
-        @last_server_lsn = b if b != 0
-        @last_message_send_time = Time.at(c / 1_000_000, c % 1_000_000, :microsecond)
+        @last_received_lsn = wal_start if wal_start != 0
+        @last_server_lsn = server_lsn if server_lsn != 0
+        @last_message_send_time = Time.at(send_time_us / 1_000_000, send_time_us % 1_000_000, :microsecond)
 
         break if @end_position != 0 && @last_received_lsn > @end_position
 
@@ -278,7 +196,7 @@ class PG::Replicator
         yield payload
         @last_processed_lsn = @last_received_lsn
       else
-        raise "unrecognized streaming header: \"%c\"" % [ identifier ]
+        raise Error, "unrecognized streaming header: \"%c\"" % [ identifier ]
       end
     end
 
@@ -289,11 +207,107 @@ class PG::Replicator
   end
 
   def close
-    connection.close
+    @connection&.close
     @connection = nil
   end
 
   private
+
+  def extract_replication_options(args)
+    return nil unless args[0].is_a?(Hash) && args[0][:replication_options]
+
+    options = args[0][:replication_options].map do |k, v|
+      PG::Connection.escape_string(k.to_s) <<
+        "=" <<
+        (PG::Connection.escape_string(case v
+          when true then "on"
+          when false then "off"
+          else v.to_s
+          end))
+    end.join(' ')
+
+    args[0].delete(:replication_options)
+    args[0].delete_if { |k, v| v.nil? || v.to_s.empty? }
+
+    options
+  end
+
+  def build_connection_params(args)
+    params = PG::Connection.parse_connect_args(*args).dup
+
+    if !(params =~ /replication='?database/)
+      params << " replication='database'"
+    end
+
+    params
+  end
+
+  def extract_connection_params
+    _, @host = *@connection_params.match(/host='([^\s]+)'/)
+    @host = "localhost" if !@host
+    @port = @connection_params.match(/port='([^\s]+)'/)&.[](1)&.to_i
+    @dbname = @connection_params.match(/dbname='([^\s]+)'/)&.[](1)
+
+    sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
+    @connection_params.gsub!(sub, ' ')
+  end
+
+  def extract_replication_params
+    sub, _, @start_position = *@connection_params.match(/(start_position|startpos)='([^\s]+)'/)
+    if @start_position
+      @connection_params.gsub!(sub, ' ')
+      @start_position = parse_lsn(@start_position)
+    else
+      # Start replication at the last place left off according to the server.
+      @start_position = 0
+    end
+
+    sub, _, @end_position = *@connection_params.match(/(end_position|endpos)='([^\s]+)'/)
+    if @end_position
+      @connection_params.gsub!(sub, ' ')
+      @end_position = parse_lsn(@end_position)
+    else
+      @end_position = 0
+    end
+
+    sub, @timeline = *@connection_params.match(/timeline='([^\s]+)'/)
+    if @timeline
+      @connection_params.gsub!(sub, ' ')
+      @timeline = @timeline.to_i
+    end
+
+    sub, @systemid = *@connection_params.match(/systemid='([^\s]+)'/)
+    if @systemid
+      @connection_params.gsub!(sub, ' ')
+      @systemid = @systemid.to_i
+    end
+
+    sub, @status_interval = *@connection_params.match(/status_interval='([^\s]+)'/)
+
+    if !@options
+      sub, @options = *@connection_params.match(/replication_options='([^']+)'/)
+      @connection_params.gsub!(sub, ' ') if @options
+    end
+
+    if @options
+      @options = @options.split(/\s+/).inject({}) do |acc, x|
+        k, v = x.split('=')
+        acc[k] = v
+        acc
+      end
+    else
+      @options = {}
+    end
+  end
+
+  def parse_lsn(value)
+    case value
+    when /\h{1,8}\/\h{1,8}/
+      value.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
+    else
+      Integer(value)
+    end
+  end
 
   def uint8(buffer)
     buffer.slice!(0).unpack('C')[0]
@@ -363,6 +377,9 @@ class PG::Replicator
     connection.put_copy_data(msg)
     connection.flush
 
+    # Yield nil to notify the caller that a feedback message was sent.
+    # This allows users to track when feedback occurs (e.g., for logging or
+    # breaking out of the replication loop after catching up).
     yield(nil) if block_given?
   end
 
