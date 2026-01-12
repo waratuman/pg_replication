@@ -260,6 +260,9 @@ class PG::Replicator
         @last_message_send_time = Time.at(b / 1_000_000, b % 1_000_000, :microsecond)
 
         send_feedback(&block) if c == 1
+
+        # If we've caught up to or past the end position, break
+        break if @end_position != 0 && @last_server_lsn >= @end_position
       when 119 # Byte1('w') WAL data
         a = int64(result)
         b = int64(result)
@@ -348,7 +351,7 @@ class PG::Replicator
     else
       @last_processed_lsn + 1
     end
-    
+
     msg = ('r'.codepoints + [
       lsn_location,
       lsn_location,
