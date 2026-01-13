@@ -12,6 +12,8 @@ class PG::Replicator
   # To inspect an LSN @lsn.to_s(16).upcase.rjust(10, '0').insert(2, "/")
   MSG_KEEPALIVE = 'k'.ord  # 107
   MSG_WAL_DATA  = 'w'.ord  # 119
+  FEEDBACK_MSG_FORMAT = 'CQ>Q>Q>Q>C'.freeze
+  FEEDBACK_MSG_TYPE = 'r'.ord  # 114
 
   attr_reader :host,
     :port,
@@ -26,8 +28,7 @@ class PG::Replicator
     :last_server_lsn,
     :last_received_lsn,
     :last_processed_lsn,
-    :last_message_send_time,
-    :last_status
+    :last_message_send_time
 
   # Note that the startpos option starts with the transaction that contains the
   # LSN, so if a transaction starts at LSN 1 and a startpos of 3 is specified
@@ -45,7 +46,7 @@ class PG::Replicator
     @last_server_lsn = 0
     @last_received_lsn = 0
     @last_processed_lsn = 0
-    @last_status = Time.now
+    @last_status_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     replicate(&block) if block
   end
@@ -94,6 +95,8 @@ class PG::Replicator
       raise Error, "integer_datetimes compile flag does not match server"
     end
 
+    @internal_encoding = @connection.internal_encoding
+
     @connection
   rescue => e
     @connection = nil
@@ -136,7 +139,8 @@ class PG::Replicator
     initialize_replication
 
     loop do
-      send_feedback(&block) if Time.now - last_status > status_interval
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      send_feedback(&block) if now - @last_status_at > status_interval
 
       break if @end_position != 0 && @last_processed_lsn >= @end_position
 
@@ -168,11 +172,11 @@ class PG::Replicator
 
       next if result == false # No data yet
 
-      case identifier = byte(result)
+      identifier, = result.unpack('C')
+      case identifier
       when MSG_KEEPALIVE
-        server_lsn = int64(result)
-        send_time_us = int64(result) + EPOCH_IN_MICROSECONDS
-        reply_requested = byte(result)
+        _, server_lsn, send_time_us, reply_requested = result.unpack('CQ>Q>C')
+        send_time_us += EPOCH_IN_MICROSECONDS
 
         @last_server_lsn = server_lsn if server_lsn != 0
         @last_message_send_time = Time.at(send_time_us / 1_000_000, send_time_us % 1_000_000, :microsecond)
@@ -182,9 +186,8 @@ class PG::Replicator
         # If we've caught up to or past the end position, break
         break if @end_position != 0 && @last_server_lsn >= @end_position
       when MSG_WAL_DATA
-        wal_start = int64(result)
-        server_lsn = int64(result)
-        send_time_us = int64(result) + EPOCH_IN_MICROSECONDS
+        _, wal_start, server_lsn, send_time_us = result.unpack('CQ>Q>Q>')
+        send_time_us += EPOCH_IN_MICROSECONDS
 
         @last_received_lsn = wal_start if wal_start != 0
         @last_server_lsn = server_lsn if server_lsn != 0
@@ -192,7 +195,7 @@ class PG::Replicator
 
         break if @end_position != 0 && @last_received_lsn > @end_position
 
-        payload = result.force_encoding(connection.internal_encoding)
+        payload = result.byteslice(25..-1).force_encoding(@internal_encoding)
         yield payload
         @last_processed_lsn = @last_received_lsn
       else
@@ -309,16 +312,6 @@ class PG::Replicator
     end
   end
 
-  def uint8(buffer)
-    buffer.slice!(0).unpack('C')[0]
-  end
-  alias :byte :uint8
-
-  def int64(buffer)
-    a, b = buffer.slice!(0, 8).unpack('NN')
-    (a << 32) + b
-  end
-
   def verify_systemid(ident)
     if @systemid.nil?
       @systemid =  ident['systemid']
@@ -357,8 +350,8 @@ class PG::Replicator
   end
 
   def send_feedback
-    @last_status = Time.now
-    timestamp = ((last_status - EPOCH) * 1000000).to_i
+    @last_status_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    timestamp = ((Time.now - EPOCH) * 1000000).to_i
 
     lsn_location = if @last_processed_lsn == 0
       0
@@ -366,13 +359,14 @@ class PG::Replicator
       @last_processed_lsn + 1
     end
 
-    msg = ('r'.codepoints + [
+    msg = [
+      FEEDBACK_MSG_TYPE,
       lsn_location,
       lsn_location,
       lsn_location,
       timestamp,
       0
-    ]).pack('CQ>Q>Q>Q>C')
+    ].pack(FEEDBACK_MSG_FORMAT)
 
     connection.put_copy_data(msg)
     connection.flush
