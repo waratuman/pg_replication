@@ -210,7 +210,7 @@ class PG::Replicator
   end
 
   def close
-    @connection&.close
+    @connection&.finish
     @connection = nil
   end
 
@@ -252,6 +252,9 @@ class PG::Replicator
     @dbname = @connection_params.match(/dbname='([^\s]+)'/)&.[](1)
 
     sub, @slot = *@connection_params.match(/slot='([^\s]+)'/)
+    if @slot.nil?
+      raise Error, "slot is required for logical replication"
+    end
     @connection_params.gsub!(sub, ' ')
   end
 
