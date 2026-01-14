@@ -47,8 +47,30 @@ class PG::Replicator
     @last_received_lsn = 0
     @last_processed_lsn = 0
     @last_status_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    @stop_requested = false
 
     replicate(&block) if block
+  end
+
+  def stop
+    @stop_requested = true
+  end
+
+  def stop_requested?
+    @stop_requested
+  end
+
+  def replicate_async(&block)
+    @thread = Thread.new { replicate(&block) }
+    self
+  end
+
+  def wait(timeout = nil)
+    @thread&.join(timeout)
+  end
+
+  def alive?
+    @thread&.alive? || false
   end
 
   def connection
@@ -136,9 +158,12 @@ class PG::Replicator
   end
 
   def replicate(&block)
+    @stop_requested = false
     initialize_replication
 
     loop do
+      break if @stop_requested
+
       now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       send_feedback(&block) if now - @last_status_at > status_interval
 
@@ -167,10 +192,9 @@ class PG::Replicator
         # end
         break
       elsif result === false
-        select([connection.socket_io], nil, nil, status_interval)
+        select([connection.socket_io], nil, nil, 0.1)
+        next
       end
-
-      next if result == false # No data yet
 
       identifier, = result.unpack('C')
       case identifier

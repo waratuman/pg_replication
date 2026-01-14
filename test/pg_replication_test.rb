@@ -440,4 +440,77 @@ class PGReplicationTest < Minitest::Test
     end
   end
 
+  def test_stop
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' );
+    SQL
+
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      replication_options: { "include-timestamp" => true },
+    }).select { |_, v| !v.nil? })
+
+    assert_equal false, replicator.stop_requested?
+
+    results = []
+    t = Thread.new do
+      replicator.replicate do |wal|
+        results << wal if wal
+      end
+    end
+
+    # Wait for replication to start and receive some messages
+    sleep(0.2)
+
+    # Request stop from another thread
+    replicator.stop
+    assert_equal true, replicator.stop_requested?
+
+    # Wait for replication to finish
+    t.join(5)
+
+    # Verify replication stopped and we got some results
+    assert t.status.nil? || !t.status, "Thread should have finished"
+    assert results.size >= 1, "Should have received at least one message"
+  ensure
+    t&.kill if t&.status
+    connection.exec("DROP TABLE IF EXISTS teas;") if connection
+  end
+
+  def test_replicate_async
+    connection.exec(<<-SQL)
+      CREATE TABLE teas ( kind TEXT );
+      INSERT INTO teas VALUES ( '煎茶' );
+    SQL
+
+    results = []
+    replicator = PG::Replicator.new(connection.conninfo_hash.merge({
+      slot: slot,
+      replication_options: { "include-timestamp" => true },
+    }).select { |_, v| !v.nil? })
+
+    # replicate_async should return self for fluent interface
+    ret = replicator.replicate_async do |wal|
+      results << wal if wal
+    end
+    assert_same replicator, ret
+
+    # Should be running
+    sleep(0.2)
+    assert replicator.alive?, "Replicator should be alive"
+
+    # Stop and wait
+    replicator.stop
+    replicator.wait(5)
+
+    # Should no longer be running
+    assert_equal false, replicator.alive?, "Replicator should not be alive after stop"
+    assert results.size >= 1, "Should have received at least one message"
+  ensure
+    replicator&.stop
+    replicator&.wait(1)
+    connection.exec("DROP TABLE IF EXISTS teas;") if connection
+  end
+
 end
