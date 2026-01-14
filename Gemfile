@@ -4,5 +4,5 @@ source "https://rubygems.org"
 gemspec
 
 gem "pg"
-gem "rake", "~> 12.0"
-gem "minitest", "~> 5.0"
+gem "rake", "~> 13.0"
+gem "minitest", "~> 6.0"

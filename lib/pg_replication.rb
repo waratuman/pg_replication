@@ -136,7 +136,7 @@ class PG::Replicator
     query = [ "START_REPLICATION SLOT" ]
     query << PG::Connection.escape_string(slot)
     query << "LOGICAL"
-    query << @start_position.to_s(16).upcase.rjust(10, '0').insert(2, "/")
+    query << format('%X/%X', @start_position >> 32, @start_position & 0xFFFFFFFF)
 
     query_options = []
     @options.each do |k, v|
@@ -196,7 +196,8 @@ class PG::Replicator
         next
       end
 
-      identifier, = result.unpack('C')
+      # Unpack header once based on first byte to avoid double unpacking
+      identifier = result.getbyte(0)
       case identifier
       when MSG_KEEPALIVE
         _, server_lsn, send_time_us, reply_requested = result.unpack('CQ>Q>C')
@@ -331,9 +332,11 @@ class PG::Replicator
   end
 
   def parse_lsn(value)
-    case value
-    when /\h{1,8}\/\h{1,8}/
-      value.split("/").map { |s| s.rjust(8, '0') }.join.to_i(16)
+    if (idx = value.index('/'))
+      # Parse LSN format "high/low" using bit-shifting (faster than regex/split/join)
+      high = value[0...idx].to_i(16)
+      low = value[(idx + 1)..-1].to_i(16)
+      (high << 32) | low
     else
       Integer(value)
     end
