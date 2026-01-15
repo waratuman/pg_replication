@@ -28,7 +28,7 @@ class PG::Replicator
     :last_server_lsn,
     :last_received_lsn,
     :last_processed_lsn,
-    :last_message_send_time
+    :last_message_send_time_us
 
   # Note that the startpos option starts with the transaction that contains the
   # LSN, so if a transaction starts at LSN 1 and a startpos of 3 is specified
@@ -46,10 +46,17 @@ class PG::Replicator
     @last_server_lsn = 0
     @last_received_lsn = 0
     @last_processed_lsn = 0
+    @last_message_send_time_us = 0
     @last_status_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     @stop_requested = false
 
     replicate(&block) if block
+  end
+
+  # Lazily convert raw microseconds to Time object (avoids allocation in hot path)
+  def last_message_send_time
+    return nil if @last_message_send_time_us == 0
+    Time.at(@last_message_send_time_us / 1_000_000, @last_message_send_time_us % 1_000_000, :microsecond)
   end
 
   def stop
@@ -159,6 +166,7 @@ class PG::Replicator
 
   def replicate(&block)
     @stop_requested = false
+    @has_end_position = @end_position != 0
     initialize_replication
 
     loop do
@@ -167,7 +175,7 @@ class PG::Replicator
       now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       send_feedback(&block) if now - @last_status_at > status_interval
 
-      break if @end_position != 0 && @last_processed_lsn >= @end_position
+      break if @has_end_position && @last_processed_lsn >= @end_position
 
       connection.consume_input
 
@@ -201,24 +209,22 @@ class PG::Replicator
       case identifier
       when MSG_KEEPALIVE
         _, server_lsn, send_time_us, reply_requested = result.unpack('CQ>Q>C')
-        send_time_us += EPOCH_IN_MICROSECONDS
 
         @last_server_lsn = server_lsn if server_lsn != 0
-        @last_message_send_time = Time.at(send_time_us / 1_000_000, send_time_us % 1_000_000, :microsecond)
+        @last_message_send_time_us = send_time_us + EPOCH_IN_MICROSECONDS
 
         send_feedback(&block) if reply_requested == 1
 
         # If we've caught up to or past the end position, break
-        break if @end_position != 0 && @last_server_lsn >= @end_position
+        break if @has_end_position && @last_server_lsn >= @end_position
       when MSG_WAL_DATA
         _, wal_start, server_lsn, send_time_us = result.unpack('CQ>Q>Q>')
-        send_time_us += EPOCH_IN_MICROSECONDS
 
         @last_received_lsn = wal_start if wal_start != 0
         @last_server_lsn = server_lsn if server_lsn != 0
-        @last_message_send_time = Time.at(send_time_us / 1_000_000, send_time_us % 1_000_000, :microsecond)
+        @last_message_send_time_us = send_time_us + EPOCH_IN_MICROSECONDS
 
-        break if @end_position != 0 && @last_received_lsn > @end_position
+        break if @has_end_position && @last_received_lsn > @end_position
 
         payload = result.byteslice(25..-1).force_encoding(@internal_encoding)
         yield payload
