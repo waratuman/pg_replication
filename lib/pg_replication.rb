@@ -386,6 +386,8 @@ class PG::Replicator
   end
 
   def send_feedback
+    yield(:before_feedback) if block_given?
+
     @last_status_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     timestamp = ((Time.now - EPOCH) * 1000000).to_i
 
@@ -407,10 +409,7 @@ class PG::Replicator
     connection.put_copy_data(msg)
     connection.flush
 
-    # Yield nil to notify the caller that a feedback message was sent.
-    # This allows users to track when feedback occurs (e.g., for logging or
-    # breaking out of the replication loop after catching up).
-    yield(nil) if block_given?
+    yield(:after_feedback) if block_given?
   end
 
 end

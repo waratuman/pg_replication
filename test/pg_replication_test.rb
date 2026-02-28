@@ -67,7 +67,7 @@ class PGReplicationTest < Minitest::Test
     assert_equal 0, replicator.last_processed_lsn
 
     replicator.replicate do |res|
-      results << res
+      results << res if res.is_a?(String)
       break if results.size >= 5
     end
 
@@ -119,7 +119,7 @@ class PGReplicationTest < Minitest::Test
     assert_equal 0, replicator.last_processed_lsn
 
     replicator.replicate do |res|
-      results << res
+      results << res if res.is_a?(String)
     end
 
     assert_equal lsn(endpos), lsn(replicator.last_received_lsn)
@@ -173,7 +173,7 @@ class PGReplicationTest < Minitest::Test
     assert_equal 0, replicator.last_processed_lsn
 
     replicator.replicate do |res|
-      results << res
+      results << res if res.is_a?(String)
     end
 
     assert_equal lsn(endpos), lsn(replicator.last_received_lsn)
@@ -211,6 +211,7 @@ class PGReplicationTest < Minitest::Test
     t = Thread.new do
       results = []
       replicator.replicate do |res|
+        next unless res.is_a?(String)
         results << res
         sleep(0.1) while pause_replication
         Thread.exit if results.size >= 5
@@ -434,10 +435,16 @@ class PGReplicationTest < Minitest::Test
       replication_options: { "include-timestamp" => true },
     }).select { |_, v| !v.nil? })
 
-    # Feedback is nil wal log
+    feedback_signals = []
     replicator.replicate do |wal|
-      break if wal.nil?
+      if wal.is_a?(Symbol)
+        feedback_signals << wal
+        break if wal == :after_feedback
+      end
     end
+
+    assert_includes feedback_signals, :before_feedback
+    assert_includes feedback_signals, :after_feedback
   end
 
   def test_stop
@@ -456,7 +463,7 @@ class PGReplicationTest < Minitest::Test
     results = []
     t = Thread.new do
       replicator.replicate do |wal|
-        results << wal if wal
+        results << wal if wal.is_a?(String)
       end
     end
 
@@ -492,7 +499,7 @@ class PGReplicationTest < Minitest::Test
 
     # replicate_async should return self for fluent interface
     ret = replicator.replicate_async do |wal|
-      results << wal if wal
+      results << wal if wal.is_a?(String)
     end
     assert_same replicator, ret
 
